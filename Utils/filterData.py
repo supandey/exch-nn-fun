@@ -30,6 +30,7 @@ def createCleanSamplesDf(df, freq = '10L', segmentSize = 20, numberSegments = 10
 #    L   milliseconds
 #    U   microseconds
     
+    idxStart = []
     idxSeen = []
     dataFeatures = []
     truthData = []
@@ -38,6 +39,7 @@ def createCleanSamplesDf(df, freq = '10L', segmentSize = 20, numberSegments = 10
     
     dfSample = df.resample(freq).last().ffill()
     
+    np.random.seed(1001)
     indexRandom = np.random.randint(dfSample.shape[0]-segmentSize*10, size=numberSegments*100000)  #create a lot of candidates
     
     
@@ -73,6 +75,7 @@ def createCleanSamplesDf(df, freq = '10L', segmentSize = 20, numberSegments = 10
                dataFeatures.append(df.iloc[idx:idx+szSeg][['instNum','qB', 'pB', 'pA', 'qA', 'pcPercent', 'numPartB', 'numPartA']].values.tolist())
                truthData.append(0)
                #Pdb().set_trace()
+               idxStart.append(idx)
                #idxSeen.append([z for z in range(idx,idx+segmentSize)])
                for z in range(idx,idx+segmentSize): idxSeen.append(z)
                
@@ -86,10 +89,11 @@ def createCleanSamplesDf(df, freq = '10L', segmentSize = 20, numberSegments = 10
                     if pBStart < dfSecondSegmentInst.iloc[0]['pB'].max() - 1.e-8: truthData.append(1)
                     if pBStart > dfSecondSegmentInst.iloc[0]['pB'].min() + 1.e-8: truthData.append(-1)
                     #idxSeen.append([z for z in range(idx,idx+segmentSize)])
+                    idxStart.append(idx)
                     for z in range(idx,idx+segmentSize): idxSeen.append(z)
-                    print('numJump = {}\n'.format(numJump))
+                    print('numJump = {} nonJump = {}\n'.format(numJump, numNoJump))
                     
-            if numJump > numberSegments and numNoJump > numberSegments:
+            if numJump >= numberSegments and numNoJump >= numberSegments/2:
                 break
             
 #            if ((numJump%10 == 0 and numJump < numberSegments and numJump > 1) or (numNoJump%10 == 0 and numNoJump < numberSegments)):
@@ -97,4 +101,4 @@ def createCleanSamplesDf(df, freq = '10L', segmentSize = 20, numberSegments = 10
             if (i%10000 == 0):
                 print('i: {}\n'.format(i))
     
-    return dataFeatures, truthData
+    return dataFeatures, truthData, idxStart, dfSample
