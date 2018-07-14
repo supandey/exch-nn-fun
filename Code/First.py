@@ -21,6 +21,6 @@ dfEsp = pd.read_pickle("../Data/esp06062018.pkl")
 #dfCme = pd.read_pickle("Data/cme62018.pkl")
 
 dfEsp = filterDf(dfEsp)
-dataFeatures, truthData, idxStart, dfSample = createCleanSamplesDf(dfEsp, freq = '10L', segmentSize = 20, numberSegments = 100, instForJump = 4)
-pickle.dump( (dataFeatures,truthData), open( "../Data/CleanFeatures.pkl", "wb" ) )
+dataFeatures, truthData, idxStart, dfSample = createCleanSamplesDf(dfEsp, freq = '10L', segmentSize = 20, numberSegments = 500, instForJump = 4)
+pickle.dump( (dataFeatures,truthData), open( "../Data/CleanFeatures_500.pkl", "wb" ) )
  

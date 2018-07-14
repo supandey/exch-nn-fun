@@ -1,5 +1,8 @@
 import numpy as np
 import pandas as pd
+
+from helpers import flatten
+
 #from IPython.core.debugger import Pdb
 
 def filterDf(df):
@@ -11,24 +14,49 @@ def filterDf(df):
 
     return df
 
-def createCleanSamplesDf(df, freq = '10L', segmentSize = 20, numberSegments = 1000, instForJump = 4):
-    # Output: dataFeatures: nxm matrix of features. m = numberSegments. n = inputs (qB,qA,...) sampled at freq in the past.
-    # Output: truthData: m vector of 0/1.
+def createSimpleCleanSamplesDf(
+        df, 
+        instForSignal = 4, 
+        n_samplesSignal = 20, 
+        n_samplesNoise = 20, 
+        sampleFreq = '10L', 
+        truthLookAhead = 10, 
+        createDfTemp = False,
+        resampleType = 'last'):
+    ''' 
+    Only use data from instForJump for features. Only 2 features so can view results easily. Feature is pcPercent 10ms and 20ms in the past.
     
-    # Assume if I miss an instrument when resampling I will see the change eventually.
+    Sampled at some frequency (ie 10ms) in the past. 
     
-    # For default inputs my input features are 10ms*10=100ms before jump. Then I check next 100ms if a jump occurs
-    # Check does bid/ask change.
+    Inputs
+       instForSignal:   index intrument we are intrested in
+       n_samplesSignal: samples where truth is -1 or 1
+       n_samplesNoise:  samples where truth is 0
+       sampleFreq:      sample data on fixed grid. Units are below.
+       truthLookAhead:  how many sampleFreq points to look for signal. ie if sampleFreq=10L and truthLookAhead = 10 we look 100ms ahead for a change in price.
+       createDfTemp:    create debug output (slow)
+       resampleType:    last, mean, sum (might capture many updates)
     
-    # In real life as soon as I see a change I switch to prediction mode. Note otehr intrumsnts can change
-    # Change in furture to allow First to have changes
+    Outputs 
+        dataFeatures: [n_samples, n_features].    features = pcPercent 10 and 20 ms in the past before truth event. 
+        truthData:    [n_samples].   0,1,-1 for no change, change down, change up
+        dfTemp:       subset of df we used to create features. For debugging.
     
     
-#    H   hourly frequency
-#    T   minutely frequency
-#    S   secondly frequency
-#    L   milliseconds
-#    U   microseconds
+    Assume if I miss an instrument when resampling I will see the change eventually.
+    
+    H   hourly frequency
+    T   minutely frequency
+    S   secondly frequency
+    L   milliseconds
+    U   microseconds
+    
+    TODO: 
+         Check for only one change in signal area to avoid flickering?
+         Should feature be mean or min/max rather than ffill?
+        
+        
+    '''
     
     idxStart = []
     idxSeen = []
@@ -37,68 +65,236 @@ def createCleanSamplesDf(df, freq = '10L', segmentSize = 20, numberSegments = 10
     numNoJump = 0
     numJump = 0
     
-    dfSample = df.resample(freq).last().ffill()
+    dfTemp = pd.DataFrame()
+    dfSample = df[df['instNum'] == instForSignal]               # only look at data for instForSignal 
+    dfSample = dfSample.resample(sampleFreq).last().ffill()
+    
+    dfSampleForOutput = pd.DataFrame()
+    if resampleType == 'last':
+        dfSampleForOutput = dfSample.resample(sampleFreq).last().ffill()
+    elif resampleType == 'mean':
+        dfSampleForOutput = dfSample.resample(sampleFreq).mean().ffill()
+    elif resampleType == 'sum':
+        dfSampleForOutput = dfSample.resample(sampleFreq).sum().ffill()
     
     np.random.seed(1001)
-    indexRandom = np.random.randint(dfSample.shape[0]-segmentSize*10, size=numberSegments*100000)  #create a lot of candidates
+    indexRandom = np.random.randint(dfSample.shape[0]-truthLookAhead*10, size=500000)  #create a lot of candidates
     
+    # Check for each indexRandom that we try to find a non-overlapping n_samplesSignal and n_samplesNoise
     
-    # Check for each indexRandom that we have no price shift down/up on bid/ask in signal section. If none we add to randomFeatures
-    szSeg = int(segmentSize/2)
+    npts = 2                                # number of time steps to look for features
+    totNpts = npts + truthLookAhead         # number of time steps to look for signal
+    
     for i in range(indexRandom.shape[0]):
         idx = indexRandom[i]
         
-        dfFirstSegment = df.iloc[idx:idx+szSeg][['instNum','pB', 'pA']]
-        dfFirstSegmentInst = dfFirstSegment[dfFirstSegment['instNum'] == instForJump]
+        dfFirstSegmentInst = dfSample.iloc[idx:idx+npts][['pB', 'pA']]        
+        dfSecondSegmentInst = dfSample.iloc[idx+npts:idx+totNpts][['pB', 'pA']]
         
-        dfSecondSegment = df.iloc[idx+szSeg:idx+segmentSize][['instNum','pB', 'pA']]
-        dfSecondSegmentInst = dfSecondSegment[dfSecondSegment['instNum'] == instForJump]
+        #Pdb().set_trace()
+            
+        pBStart = dfFirstSegmentInst.iloc[0]['pB']
+        pAStart = dfFirstSegmentInst.iloc[0]['pA']
         
-        if (dfFirstSegmentInst.shape[0] > 0 and dfSecondSegmentInst.shape[0] > 0):  # make sure at least two changes in inst
+        noChangeFirst = True
+        if np.sum(np.diff(dfFirstSegmentInst['pB'])) > 1.e-8 or np.sum(np.diff(dfFirstSegmentInst['pA'])) > 1.e-8:
+            noChangeFirst = False
             
-            pBStart = dfFirstSegmentInst.iloc[0]['pB']
-            pAStart = dfFirstSegmentInst.iloc[0]['pA']
+        noChangeSecond = True
+        if np.sum(np.diff(dfSecondSegmentInst['pB'])) > 1.e-8 or np.sum(np.diff(dfSecondSegmentInst['pA'])) > 1.e-8:
+            noChangeSecond = False
             
-            noChangeFirst = True
-            if np.sum(np.diff(dfFirstSegmentInst['pB'])) > 1.e-8 or np.sum(np.diff(dfFirstSegmentInst['pA'])) > 1.e-8:
-                noChangeFirst = False
-                
-            noChangeSecond = True
-            if np.sum(np.diff(dfSecondSegmentInst['pB'])) > 1.e-8 or np.sum(np.diff(dfSecondSegmentInst['pA'])) > 1.e-8:
-                noChangeSecond = False
-                
-            if (idxSeen.count(idx) == 0 and idxSeen.count(idx+segmentSize-1) == 0 and   # no overlapping segments
-                numNoJump < numberSegments and 
-                noChangeFirst == True and 
-                noChangeSecond == True):
-               numNoJump = numNoJump + 1 
-               dataFeatures.append(df.iloc[idx:idx+szSeg][['instNum','qB', 'pB', 'pA', 'qA', 'pcPercent', 'numPartB', 'numPartA']].values.tolist())
-               truthData.append(0)
-               #Pdb().set_trace()
-               idxStart.append(idx)
-               #idxSeen.append([z for z in range(idx,idx+segmentSize)])
-               for z in range(idx,idx+segmentSize): idxSeen.append(z)
-               
+        # Noise
+        if (idxSeen.count(idx) == 0 and idxSeen.count(idx+totNpts-1) == 0 and   # no overlapping segments
+            numNoJump < n_samplesNoise and 
+            noChangeFirst == True and 
+            noChangeSecond == True):
+           
+           numNoJump = numNoJump + 1 
+           features = flatten(dfSampleForOutput.iloc[idx:idx+npts][['pcPercent']].values.tolist())
+           dataFeatures.append(features)
+           truthData.append(0)
+           #Pdb().set_trace()
+           idxStart.append(idx)
+           for z in range(idx,idx+totNpts): idxSeen.append(z)
+           if createDfTemp: dfTemp = dfTemp.append(dfSample.iloc[idx:idx+totNpts])
+           
+        # Signal
+        if (idxSeen.count(idx) == 0 and idxSeen.count(idx+totNpts-1) == 0 and   # no overlapping segments
+             numJump < n_samplesSignal and noChangeFirst == True and
+             (pBStart < dfSecondSegmentInst['pB'].max() - 1.e-8 and pAStart < dfSecondSegmentInst['pA'].max() - 1.e-8) or 
+             (pBStart > dfSecondSegmentInst['pB'].min() + 1.e-8 and pAStart > dfSecondSegmentInst['pA'].min() + 1.e-8)):
             
-            if (idxSeen.count(idx) == 0 and idxSeen.count(idx+segmentSize-1) == 0 and   # no overlapping segments
-                numJump < numberSegments and noChangeFirst == True and
-                (pBStart < dfSecondSegmentInst.iloc[0]['pB'].max() - 1.e-8 and pAStart < dfSecondSegmentInst.iloc[0]['pA'].max() - 1.e-8) or 
-                (pBStart > dfSecondSegmentInst.iloc[0]['pB'].min() + 1.e-8 and pAStart > dfSecondSegmentInst.iloc[0]['pA'].min() + 1.e-8)):
-                    numJump = numJump + 1 
-                    dataFeatures.append(df.iloc[idx:idx+szSeg][['instNum','qB', 'pB', 'pA', 'qA', 'pcPercent', 'numPartB', 'numPartA']].values.tolist())
-                    if pBStart < dfSecondSegmentInst.iloc[0]['pB'].max() - 1.e-8: truthData.append(1)
-                    if pBStart > dfSecondSegmentInst.iloc[0]['pB'].min() + 1.e-8: truthData.append(-1)
-                    #idxSeen.append([z for z in range(idx,idx+segmentSize)])
-                    idxStart.append(idx)
-                    for z in range(idx,idx+segmentSize): idxSeen.append(z)
-                    print('numJump = {} nonJump = {}\n'.format(numJump, numNoJump))
+            numJump = numJump + 1 
+            features = flatten(dfSampleForOutput.iloc[idx:idx+npts][['pcPercent']].values.tolist())
+            dataFeatures.append(features)
+            if pBStart < dfSecondSegmentInst['pB'].max() - 1.e-8: truthData.append(1)
+            if pBStart > dfSecondSegmentInst['pB'].min() + 1.e-8: truthData.append(-1)
+            idxStart.append(idx)
+            for z in range(idx,idx+npts): idxSeen.append(z)
+            if createDfTemp: dfTemp = dfTemp.append(dfSample.iloc[idx:idx+totNpts])
+            print('numJump = {} nonJump = {}\n'.format(numJump, numNoJump))
                     
-            if numJump >= numberSegments and numNoJump >= numberSegments/2:
-                break
-            
-#            if ((numJump%10 == 0 and numJump < numberSegments and numJump > 1) or (numNoJump%10 == 0 and numNoJump < numberSegments)):
-#                print('number: {} {} \n'.format(numJump, numNoJump))
-            if (i%10000 == 0):
-                print('i: {}\n'.format(i))
+        if numJump >= n_samplesSignal and numNoJump >= n_samplesNoise:
+            break
+        
+        if (i%10000 == 0):
+            print('i: {}\n'.format(i))
     
-    return dataFeatures, truthData, idxStart, dfSample
+    return dataFeatures, truthData, dfTemp
+
+def createSimpleCleanSamplesManyInstrumentsDf(
+        df, 
+        instForSignal = 4, 
+        n_samplesSignal = 20, 
+        n_samplesNoise = 20, 
+        sampleFreq = '10L', 
+        truthLookAhead = 10, 
+        createDfTemp = False,
+        resampleType = 'last',
+        otherFeatureInsts = [0 , 1, 2, 3, 5]):
+    ''' 
+    Only use data from all instruments for features. Only 2 features per instrument. Feature is pcPercent 10ms and 20ms in the past.
+    
+    Sampled at some frequency (ie 10ms) in the past. 
+    
+    Inputs
+       instForSignal:       index intrument we are intrested in
+       n_samplesSignal:     samples where truth is -1 or 1
+       n_samplesNoise:      samples where truth is 0
+       sampleFreq:          sample data on fixed grid. Units are below.
+       truthLookAhead:      how many sampleFreq points to look for signal. ie if sampleFreq=10L and truthLookAhead = 10 we look 100ms ahead for a change in price.
+       createDfTemp:        create debug output (slow)
+       resampleType:        last, mean, sum (might capture many updates)
+       otherFeatureInsts:   add same features fomr other instruments
+    
+    Outputs 
+        dataFeatures: [n_samples, n_features].    features = pcPercent 10 and 20 ms in the past before truth event. 
+        truthData:    [n_samples].   0,1,-1 for no change, change down, change up
+        dfTemp:       subset of df we used to create features. For debugging.
+    
+    
+    Assume if I miss an instrument when resampling I will see the change eventually.
+    
+    H   hourly frequency
+    T   minutely frequency
+    S   secondly frequency
+    L   milliseconds
+    U   microseconds
+    
+    TODO: 
+         Check for only one change in signal area to avoid flickering?
+         Should feature be mean or min/max rather than ffill?
+        
+        
+    '''
+    
+    idxStart = []
+    idxSeen = []
+    dataFeatures = []
+    truthData = []
+    numNoJump = 0
+    numJump = 0
+    
+    dfTemp = pd.DataFrame()
+    dfSample = df[df['instNum'] == instForSignal]               # only look at data for instForSignal 
+    dfSample = dfSample.resample(sampleFreq).last().ffill()
+    
+    dfSampleForOutput = pd.DataFrame()
+    if resampleType == 'last':
+        dfSampleForOutput = dfSample.resample(sampleFreq).last().ffill()
+    elif resampleType == 'mean':
+        dfSampleForOutput = dfSample.resample(sampleFreq).mean().ffill()
+    elif resampleType == 'sum':
+        dfSampleForOutput = dfSample.resample(sampleFreq).sum().ffill()
+    
+    # crude way to see every instrument at the same time snapshot
+    dfMap = {}
+    for instNum in otherFeatureInsts:
+        dfInst = df[df['instNum'] == instNum]   
+        
+        if resampleType == 'last':
+            dfInst = dfInst.resample(sampleFreq).last().ffill()
+        elif resampleType == 'mean':
+            dfInst = dfInst.resample(sampleFreq).mean().ffill()
+        elif resampleType == 'sum':
+            dfInst = dfInst.resample(sampleFreq).sum().ffill()
+        
+        dfMap[instNum] = dfInst
+    
+    np.random.seed(1001)
+    indexRandom = np.random.randint(dfSample.shape[0]-truthLookAhead*10, size=500000)  #create a lot of candidates
+    
+    # Check for each indexRandom that we try to find a non-overlapping n_samplesSignal and n_samplesNoise
+    
+    npts = 2                                # number of time steps to look for features
+    totNpts = npts + truthLookAhead         # number of time steps to look for signal
+    
+    for i in range(indexRandom.shape[0]):
+        idx = indexRandom[i]
+        
+        dfFirstSegmentInst = dfSample.iloc[idx:idx+npts][['pB', 'pA']]        
+        dfSecondSegmentInst = dfSample.iloc[idx+npts:idx+totNpts][['pB', 'pA']]
+        
+        #Pdb().set_trace()
+            
+        pBStart = dfFirstSegmentInst.iloc[0]['pB']
+        pAStart = dfFirstSegmentInst.iloc[0]['pA']
+        
+        noChangeFirst = True
+        if np.sum(np.diff(dfFirstSegmentInst['pB'])) > 1.e-8 or np.sum(np.diff(dfFirstSegmentInst['pA'])) > 1.e-8:
+            noChangeFirst = False
+            
+        noChangeSecond = True
+        if np.sum(np.diff(dfSecondSegmentInst['pB'])) > 1.e-8 or np.sum(np.diff(dfSecondSegmentInst['pA'])) > 1.e-8:
+            noChangeSecond = False
+            
+        # Noise
+        if (idxSeen.count(idx) == 0 and idxSeen.count(idx+totNpts-1) == 0 and   # no overlapping segments
+            numNoJump < n_samplesNoise and 
+            noChangeFirst == True and 
+            noChangeSecond == True):
+           
+            numNoJump = numNoJump + 1 
+          
+            features = dfSampleForOutput.iloc[idx:idx+npts][['pcPercent']].values.tolist()
+            for instNum, dfInstNum in dfMap.items():
+                features.append(dfInstNum.iloc[idx:idx+npts][['pcPercent']].values.tolist())
+           
+            dataFeatures.append(flatten(features))
+            
+            truthData.append(0)
+            #Pdb().set_trace()
+            idxStart.append(idx)
+            for z in range(idx,idx+totNpts): idxSeen.append(z)
+            if createDfTemp: dfTemp = dfTemp.append(dfSample.iloc[idx:idx+totNpts])
+           
+        # Signal
+        if (idxSeen.count(idx) == 0 and idxSeen.count(idx+totNpts-1) == 0 and   # no overlapping segments
+            numJump < n_samplesSignal and noChangeFirst == True and
+            (pBStart < dfSecondSegmentInst['pB'].max() - 1.e-8 and pAStart < dfSecondSegmentInst['pA'].max() - 1.e-8) or 
+            (pBStart > dfSecondSegmentInst['pB'].min() + 1.e-8 and pAStart > dfSecondSegmentInst['pA'].min() + 1.e-8)):
+                
+            numJump = numJump + 1 
+            
+            features = dfSampleForOutput.iloc[idx:idx+npts][['pcPercent']].values.tolist()
+            for instNum, dfInstNum in dfMap.items():
+                features.append(dfInstNum.iloc[idx:idx+npts][['pcPercent']].values.tolist())
+           
+            dataFeatures.append(flatten(features))
+            
+            if pBStart < dfSecondSegmentInst['pB'].max() - 1.e-8: truthData.append(1)
+            if pBStart > dfSecondSegmentInst['pB'].min() + 1.e-8: truthData.append(-1)
+            idxStart.append(idx)
+            for z in range(idx,idx+npts): idxSeen.append(z)
+            if createDfTemp: dfTemp = dfTemp.append(dfSample.iloc[idx:idx+totNpts])
+            print('numJump = {} nonJump = {}\n'.format(numJump, numNoJump))
+                    
+        if numJump >= n_samplesSignal and numNoJump >= n_samplesNoise:
+            break
+        
+        if (i%10000 == 0):
+            print('i: {}\n'.format(i))
+    
+    return dataFeatures, truthData, dfTemp
+
